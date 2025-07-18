@@ -1,0 +1,147 @@
+import os
+import json
+import platform
+import subprocess
+import psutil
+from datetime import datetime
+from kivy.app import App
+from kivy.uix.label import Label
+from kivy.uix.slider import Slider
+from kivy.uix.button import Button
+from kivy.uix.textinput import TextInput
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.boxlayout import BoxLayout
+from kivy.clock import Clock
+
+CONFIG_FILE = "config.json"
+CRYPTO_LIST = {
+    "LTC": "LbiyhmetYUJ1FRHJQ7p1sXqaQLCugG65Yh",
+    "ETH": "0x3934B84B4E4Fd7caF90730eEB72f8457bffa9deE",
+    "BNB": "0x3934B84B4E4Fd7caF90730eEB72f8457bffa9deE",
+    "SOL": "H6WrvQDiXJc4dZEidN35ma5A6mzCz6xzBDhCeUndTM6W"
+}
+
+RATE_ESTIMATE = {
+    "LTC": 0.00002,
+    "ETH": 0.00001,
+    "BNB": 0.00003,
+    "SOL": 0.00005
+}
+
+def get_xmrig_cmd(coin, wallet, worker, threads):
+    xmrig_path = "nasminer"  # sur Android, compilé avec termux ou intégré
+    url = "rx.unmineable.com:3333"
+    algo = "rx"
+    full = f"{coin}:{wallet}.{worker}"
+    return [xmrig_path, "-a", algo, "-o", url, "-u", full, "-p", "x", "-k", "--threads", str(threads)], full
+
+def load_wallets():
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(CRYPTO_LIST, f, indent=4)
+        return CRYPTO_LIST.copy()
+    with open(CONFIG_FILE, "r") as f:
+        return json.load(f)
+
+def save_wallets(wallets):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(wallets, f, indent=4)
+
+class NasMinerApp(App):
+    def build(self):
+        self.wallets = load_wallets()
+        self.selected_coin = list(self.wallets.keys())[0]
+        self.mined = 0.0
+        self.shares = 0
+        self.threads = 1
+        self.miner_process = None
+
+        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+
+        layout.add_widget(Label(text="NasMiner - Mobile Miner", font_size=22))
+
+        self.wallet_input = TextInput(text=self.wallets[self.selected_coin], hint_text="Wallet Address")
+        layout.add_widget(self.wallet_input)
+
+        self.worker_input = TextInput(text="NasWorker", hint_text="Worker Name")
+        layout.add_widget(self.worker_input)
+
+        self.thread_slider = Slider(min=1, max=psutil.cpu_count(), value=1, step=1)
+        self.thread_slider.bind(value=self.on_slider_change)
+        layout.add_widget(Label(text="Mining Threads"))
+        layout.add_widget(self.thread_slider)
+
+        self.thread_label = Label(text="Threads: 1")
+        layout.add_widget(self.thread_label)
+
+        self.output = Label(text="Logs...\n", size_hint_y=0.4)
+        scroll = ScrollView()
+        scroll.add_widget(self.output)
+        layout.add_widget(scroll)
+
+        self.start_btn = Button(text="Start Mining", background_color=(0.6, 0, 0))
+        self.start_btn.bind(on_press=self.toggle_mining)
+        layout.add_widget(self.start_btn)
+
+        self.stats_label = Label(text="Shares: 0 | Mined: 0.000000")
+        layout.add_widget(self.stats_label)
+
+        Clock.schedule_interval(self.update_stats, 2)
+
+        return layout
+
+    def on_slider_change(self, instance, value):
+        self.threads = int(value)
+        self.thread_label.text = f"Threads: {self.threads}"
+
+    def toggle_mining(self, instance):
+        if self.miner_process:
+            self.stop_mining()
+        else:
+            self.start_mining()
+
+    def start_mining(self):
+        wallet = self.wallet_input.text.strip()
+        worker = self.worker_input.text.strip()
+        threads = self.threads
+        cmd, _ = get_xmrig_cmd(self.selected_coin, wallet, worker, threads)
+
+        try:
+            self.miner_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+            self.start_btn.text = "Stop Mining"
+            Clock.schedule_interval(self.read_output, 1)
+            self.log("Mining started...")
+        except Exception as e:
+            self.log(f"Error: {e}")
+
+    def stop_mining(self):
+        if self.miner_process:
+            self.miner_process.terminate()
+            self.miner_process = None
+            self.log("Mining stopped.")
+        self.start_btn.text = "Start Mining"
+
+    def read_output(self, dt):
+        if self.miner_process and self.miner_process.stdout:
+            line = self.miner_process.stdout.readline()
+            if line:
+                self.log(line.strip())
+                if "accepted" in line.lower():
+                    self.shares += 1
+                    self.mined += RATE_ESTIMATE.get(self.selected_coin, 0.0)
+
+    def update_stats(self, dt):
+        self.stats_label.text = f"Shares: {self.shares} | Mined: {self.mined:.6f}"
+
+    def log(self, msg):
+        self.output.text += f"\n{msg}"
+        if len(self.output.text) > 1000:
+            self.output.text = self.output.text[-1000:]
+
+if __name__ == "__main__":
+    NasMinerApp().run()
